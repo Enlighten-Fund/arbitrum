@@ -1843,6 +1843,18 @@ arb-ts@^0.0.36:
     dotenv "^10.0.0"
     ethers "^5.1.0"
 
+arbos-precompiles@1.0.1:
+  version "1.0.1"
+  resolved "https://registry.yarnpkg.com/arbos-precompiles/-/arbos-precompiles-1.0.1.tgz#90de6534d652d5c17b7f6a8c4f58d66bd4cc2d67"
+  integrity sha512-KHTyjtp70ApKgTsLANlM7p75l7PKfP4ptjeh9XEwQsR8ZLxjZ5gsZOXydsKoMqgUUK0HfQtTpsZyZc4B1BLARQ==
+
+arbos-precompiles@^1.0.1:
+  version "1.0.2"
+  resolved "https://registry.yarnpkg.com/arbos-precompiles/-/arbos-precompiles-1.0.2.tgz#7bebd5963aef972cd259eb41f3116ea065013ea6"
+  integrity sha512-1dOFYFJUN0kKoofh6buZJ8qCqTs+oLGSsGzHI0trA/Pka/TCERflCRsNVxez2lihOvK7MT/a2RA8AepKtBXdPQ==
+  dependencies:
+    hardhat "^2.6.4"
+
 archy@^1.0.0:
   version "1.0.0"
   resolved "https://registry.yarnpkg.com/archy/-/archy-1.0.0.tgz#f9c8c13757cc1dd7bc379ac77b2c62a5c2868c40"
@@ -4252,13 +4264,13 @@ eslint-config-prettier@^8.3.0:
   resolved "https://registry.yarnpkg.com/eslint-config-prettier/-/eslint-config-prettier-8.3.0.tgz#f7471b20b6fe8a9a9254cc684454202886a2dd7a"
   integrity sha512-BgZuLUSeKzvlL/VUjx/Yb787VQ26RU3gGjA3iiFvdsp/2bMfVIWUVP7tjxtjS0e+HP409cPlPvNkQloz8C91ew==
 
-eslint-plugin-mocha@^9.0.0:
-  version "9.0.0"
-  resolved "https://registry.yarnpkg.com/eslint-plugin-mocha/-/eslint-plugin-mocha-9.0.0.tgz#b4457d066941eecb070dc06ed301c527d9c61b60"
-  integrity sha512-d7knAcQj1jPCzZf3caeBIn3BnW6ikcvfz0kSqQpwPYcVGLoJV5sz0l0OJB2LR8I7dvTDbqq1oV6ylhSgzA10zg==
+eslint-plugin-mocha@^10.0.4:
+  version "10.0.4"
+  resolved "https://registry.yarnpkg.com/eslint-plugin-mocha/-/eslint-plugin-mocha-10.0.4.tgz#b129a1aef8312e8ceaf1b35ff0367f93e917d90a"
+  integrity sha512-8wzAeepVY027oBHz/TmBmUr7vhVqoC1KTFeDybFLhbaWKx+aQ7fJJVuUsqcUy+L+G+XvgQBJY+cbAf7hl5DF7Q==
   dependencies:
     eslint-utils "^3.0.0"
-    ramda "^0.27.1"
+    ramda "^0.28.0"
 
 eslint-plugin-prettier@^4.0.0:
   version "4.0.0"
@@ -9198,10 +9210,10 @@ queue-microtask@^1.2.2:
   resolved "https://registry.yarnpkg.com/queue-microtask/-/queue-microtask-1.2.3.tgz#4929228bbc724dfac43e0efb058caf7b6cfb6243"
   integrity sha512-NuaNSa6flKT5JaSYQzJok04JzTL1CA6aGhv5rfLW3PgqA+M2ChpZQnAC8h8i4ZFkBS8X5RqkDBHA7r4hej3K9A==
 
-ramda@^0.27.1:
-  version "0.27.1"
-  resolved "https://registry.yarnpkg.com/ramda/-/ramda-0.27.1.tgz#66fc2df3ef873874ffc2da6aa8984658abacf5c9"
-  integrity sha512-PgIdVpn5y5Yns8vqb8FzBUEYn98V3xcPgawAkkgj0YJ0qDsnHCiNmZYfOGMgOvoB0eWFLpYbhxUR3mxfDIMvpw==
+ramda@^0.28.0:
+  version "0.28.0"
+  resolved "https://registry.yarnpkg.com/ramda/-/ramda-0.28.0.tgz#acd785690100337e8b063cab3470019be427cc97"
+  integrity sha512-9QnLuG/kPVgWvMQ4aODhsBUFKOUmnbUnsSXACv+NCQZcHbeb+v8Lodp8OVxtRULN1/xOyYLLaL6npE6dMq5QTA==
 
 randombytes@^2.0.0, randombytes@^2.0.1, randombytes@^2.0.5, randombytes@^2.0.6, randombytes@^2.1.0:
   version "2.1.0"
