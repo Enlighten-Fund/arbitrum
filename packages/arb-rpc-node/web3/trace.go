@@ -569,6 +569,7 @@ func (t *Trace) ReplayBlockTransactions(ctx context.Context, blockNum rpc.BlockN
 }
 
 func (t *Trace) ReplayTransaction(ctx context.Context, txHash hexutil.Bytes, traceTypes []string) (*TraceResult, error) {
+
 	traceDestroys, err := authenticateTraceType(traceTypes)
 	if err != nil {
 		return nil, err
