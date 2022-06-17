@@ -17,15 +17,24 @@
 package txdb
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
-	"github.com/offchainlabs/arbitrum/packages/arb-util/arblog"
+	"io"
+	"math"
 	"math/big"
+	"os"
+	"path"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/offchainlabs/arbitrum/packages/arb-util/arblog"
+
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	ethcore "github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/event"
@@ -34,8 +43,10 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/offchainlabs/arbitrum/packages/arb-evm/evm"
+	"github.com/offchainlabs/arbitrum/packages/arb-evm/message"
 	"github.com/offchainlabs/arbitrum/packages/arb-rpc-node/blockcache"
 	"github.com/offchainlabs/arbitrum/packages/arb-rpc-node/snapshot"
+	"github.com/offchainlabs/arbitrum/packages/arb-rpc-node/utils"
 	"github.com/offchainlabs/arbitrum/packages/arb-util/common"
 	"github.com/offchainlabs/arbitrum/packages/arb-util/configuration"
 	"github.com/offchainlabs/arbitrum/packages/arb-util/core"
@@ -165,7 +176,7 @@ func processBlockResults(block *evm.BlockInfo, avmLogs []core.ValueAndInbox) ([]
 	return results, nil
 }
 
-func (db *TxDB) AddLogs(initialLogIndex *big.Int, avmLogs []core.ValueAndInbox) error {
+func (db *TxDB) AddLogs(initialLogIndex *big.Int, avmLogs []core.ValueAndInbox, ctx context.Context) error {
 	logger.Debug().Str("start", initialLogIndex.String()).Int("count", len(avmLogs)).Msg("adding logs")
 	logIndex := initialLogIndex.Uint64()
 	var lastBlockAdded *evm.BlockInfo
@@ -179,7 +190,7 @@ func (db *TxDB) AddLogs(initialLogIndex *big.Int, avmLogs []core.ValueAndInbox) 
 
 		switch res := res.(type) {
 		case *evm.BlockInfo:
-			lastBlockHeader, err = db.handleBlockReceipt(res)
+			lastBlockHeader, err = db.handleBlockReceipt(res, ctx)
 			if err != nil {
 				logger.Warn().Err(err).Msg("Error handling block receipt")
 			}
@@ -289,7 +300,154 @@ func (db *TxDB) DeleteLogs(avmLogs []core.ValueAndInbox) error {
 	return nil
 }
 
-func (db *TxDB) handleBlockReceipt(blockInfo *evm.BlockInfo) (*types.Header, error) {
+func getFile(taskName string, blockNumber uint64, perFolder, perFile uint64) (*os.File, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("get current work dir failed: %w", err)
+	}
+
+	logPath := path.Join(cwd, "dump", taskName, strconv.FormatUint(blockNumber/perFolder, 10), strconv.FormatUint(blockNumber/perFile, 10)+".log")
+	fmt.Printf("log path: %v, block: %v\n", logPath, blockNumber)
+	if err := os.MkdirAll(path.Dir(logPath), 0755); err != nil {
+		return nil, fmt.Errorf("mkdir for all parents [%v] failed: %w", path.Dir(logPath), err)
+	}
+
+	file, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0777)
+	if err != nil {
+		return nil, fmt.Errorf("create file %s failed: %w", logPath, err)
+	}
+	return file, nil
+}
+
+func BlockDumpLogger(block *types.Block, perFolder, perFile uint64) error {
+	file, err := getFile("blocks", block.NumberU64(), perFolder, perFile)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	entry := map[string]interface{}{
+		"timestamp":   block.Time(),
+		"blockNumber": block.NumberU64(),
+		"blockHash":   block.Hash(),
+		"parentHash":  block.ParentHash(),
+		"gasLimit":    block.GasLimit(),
+		"gasUsed":     block.GasUsed(),
+		"miner":       block.Coinbase(),
+		"difficulty":  block.Difficulty(),
+		"nonce":       block.Nonce(),
+		"size":        block.Size(),
+	}
+	encoder := json.NewEncoder(file)
+	if err := encoder.Encode(entry); err != nil {
+		return fmt.Errorf("failed to encode block entry %w", err)
+	}
+	return nil
+}
+
+type TxLogger struct {
+	blockNumber uint64
+	blockHash   ethcommon.Hash
+	sb          *strings.Builder
+	file        *os.File
+	encoder     *json.Encoder
+}
+
+func NexTxLogger(blockNumber uint64, blockHash ethcommon.Hash, perFolder, perFile uint64) (*TxLogger, error) {
+	file, err := getFile("transactions", blockNumber, perFolder, perFile)
+	if err != nil {
+		return nil, err
+	}
+	sb := &strings.Builder{}
+	return &TxLogger{
+		blockNumber: blockNumber,
+		blockHash:   blockHash,
+		file:        file,
+		sb:          sb,
+		encoder:     json.NewEncoder(sb),
+	}, nil
+}
+
+func (t *TxLogger) TransactionDumplogger(res *evm.TxResult, tx *types.Transaction, receipt *types.Receipt) error {
+	vVal, rVal, sVal := tx.RawSignatureValues()
+	txIndex := res.TxIndex.Uint64()
+
+	entry := map[string]interface{}{
+		"blockNumber":       t.blockNumber,
+		"blockHash":         t.blockHash,
+		"transactionIndex":  txIndex,
+		"transactionHash":   tx.Hash(),
+		"from":              res.IncomingRequest.Sender.ToEthAddress(),
+		"to":                tx.To(),
+		"gas":               tx.Gas(),
+		"gasPrice":          tx.GasPrice(),
+		"data":              tx.Data(),
+		"accessList":        tx.AccessList(),
+		"nonce":             tx.Nonce(),
+		"gasFeeCap":         tx.GasFeeCap(),
+		"gasTipCap":         tx.GasTipCap(),
+		"effectiveGasPrice": hexutil.Uint64(res.FeeStats.Price.L2Computation.Uint64()),
+		"v":                 vVal,
+		"r":                 rVal,
+		"s":                 sVal,
+		"type":              tx.Type(),
+		"value":             tx.Value(),
+		"status":            receipt.Status,
+	}
+	if err := t.encoder.Encode(entry); err != nil {
+		return fmt.Errorf("failed to encode transaction entry %w", err)
+	}
+	return nil
+}
+
+func (t *TxLogger) Close() error {
+	if _, err := t.file.WriteString(t.sb.String()); err != nil {
+		return err
+	}
+	return t.file.Close()
+}
+
+func ReceiptDumpLogger(blockNumber uint64, perFolder, perFile uint64, receipts []*types.Receipt) error {
+	file, err := getFile("receipts", blockNumber, perFolder, perFile)
+	if err != nil {
+		return err
+	}
+	sb := &strings.Builder{}
+	encoder := json.NewEncoder(sb)
+	for _, receipt := range receipts {
+		for _, log := range receipt.Logs {
+			err := encoder.Encode(log)
+			if err != nil {
+				return fmt.Errorf("encode receipt failed: %w", err)
+			}
+		}
+	}
+	if _, err := file.WriteString(sb.String()); err != nil {
+		return err
+	}
+	return nil
+}
+
+func TraceDumpLogger(blockNumber uint64, perFolder, perFile uint64, traces []*utils.TraceFrame) error {
+	file, err := getFile("traces", blockNumber, perFolder, perFile)
+	if err != nil {
+		return err
+	}
+	sb := &strings.Builder{}
+	encoder := json.NewEncoder(sb)
+	for _, trace := range traces {
+		err := encoder.Encode(trace)
+		if err != nil {
+			return fmt.Errorf("encode trace failed: %w", err)
+		}
+	}
+	if _, err := file.WriteString(sb.String()); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (db *TxDB) handleBlockReceipt(blockInfo *evm.BlockInfo, ctx context.Context) (*types.Header, error) {
 	logger.Debug().
 		Uint64("number", blockInfo.BlockNum.Uint64()).
 		Uint64("block_txcount", blockInfo.BlockStats.TxCount.Uint64()).
@@ -338,6 +496,7 @@ func (db *TxDB) handleBlockReceipt(blockInfo *evm.BlockInfo) (*types.Header, err
 			logger.Msg("tx reverted")
 		}
 	}
+	//.Hash().String()
 
 	prevHash := ethcommon.Hash{}
 	if blockInfo.BlockNum.Cmp(big.NewInt(0)) > 0 {
@@ -362,10 +521,30 @@ func (db *TxDB) handleBlockReceipt(blockInfo *evm.BlockInfo) (*types.Header, err
 	}
 
 	block := types.NewBlock(header, ethTxes, nil, ethReceipts, new(trie.Trie))
+
+	// dump block data
+	BlockDumpLogger(block, 10000, 100)
+
+	// create transaction dump instance
+	txLogger, err := NexTxLogger(block.NumberU64(), block.Hash(), 10000, 100)
+	if err != nil {
+		return nil, err
+	}
+	defer txLogger.Close()
+
 	avmLogIndex := blockInfo.ChainStats.AVMLogCount.Uint64() - 1
 	ethLogs := make([]*types.Log, 0)
 	for _, res := range processedResults {
+		// dump transaction data
+		if err := txLogger.TransactionDumplogger(res.Result, res.Tx, res.Result.ToEthReceipt(common.Hash{})); err != nil {
+			return nil, err
+		}
+
 		ethLogs = append(ethLogs, res.Result.EthLogs(common.NewHashFromEth(block.Hash()))...)
+	}
+	// dump receipt data
+	if err := ReceiptDumpLogger(blockInfo.BlockNum.Uint64(), 10000, 100, ethReceipts); err != nil {
+		return nil, err
 	}
 
 	requests := make([]machine.EVMRequestInfo, 0, len(txResults))
@@ -382,7 +561,6 @@ func (db *TxDB) handleBlockReceipt(blockInfo *evm.BlockInfo) (*types.Header, err
 				continue
 			}
 		}
-
 		requests = append(requests, machine.EVMRequestInfo{
 			RequestId: txRes.IncomingRequest.MessageID,
 			LogIndex:  blockInfo.FirstAVMLog().Uint64() + uint64(i),
@@ -394,6 +572,7 @@ func (db *TxDB) handleBlockReceipt(blockInfo *evm.BlockInfo) (*types.Header, err
 		BlockLog: avmLogIndex,
 		LogCount: blockInfo.BlockStats.AVMLogCount.Uint64(),
 	}
+
 	if err := db.as.SaveBlock(arbBlockInfo, requests); err != nil {
 		return nil, err
 	}
@@ -406,6 +585,270 @@ func (db *TxDB) handleBlockReceipt(blockInfo *evm.BlockInfo) (*types.Header, err
 	if len(ethLogs) > 0 {
 		db.logsFeed.Send(ethLogs)
 	}
+	enable_trace := os.Getenv("ENABLE_TRACE")
+	if enable_trace == "true" {
+		// create a file to monitor trace dump process
+		cwd, err := os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("get current work dir failed: %w", err)
+		}
+		logPath := path.Join(cwd, "trace_process", "trace_process"+".log")
+		if err := os.MkdirAll(path.Dir(logPath), 0755); err != nil {
+			return nil, fmt.Errorf("mkdir for all parents [%v] failed: %w", path.Dir(logPath), err)
+		}
+		file, err := os.OpenFile(logPath, os.O_RDWR|os.O_CREATE, 0777)
+		if err != nil {
+			return nil, fmt.Errorf("create file %s failed: %w", logPath, err)
+		}
+		buf := bufio.NewReader(file)
+		line, err := buf.ReadString('\n')
+		line = strings.TrimSpace(line)
+		disk_trace_number := uint64(1)
+		if len(line) > 0 {
+			disk_trace_number, err = strconv.ParseUint(line, 10, 64)
+		}
+
+		defer file.Close()
+
+		// start no trace loss
+		if disk_trace_number+1 == block.NumberU64() {
+
+			// compute time cost
+			startT := time.Now()
+
+			cursor, err := db.Lookup.GetExecutionCursorAtEndOfBlock(arbBlockInfo.Header.Number.Uint64()-1, true)
+			if err != nil {
+				return nil, err
+			}
+			tc := time.Since(startT)
+			fmt.Printf("funtion GetExecutionCursorAtEndOfBlock time cost = %v\n", tc)
+
+			blockLog := blockInfo
+			logIndex := blockLog.FirstAVMLog()
+			var tracelist []*utils.TraceFrame
+			for i := uint64(0); i < blockLog.BlockStats.TxCount.Uint64(); i++ {
+				txRes := txResults[i]
+				failMsg := logger.
+					Warn().
+					Uint64("block", arbBlockInfo.Header.Number.Uint64()).
+					Str("txhash", txRes.IncomingRequest.MessageID.String()).
+					Err(err)
+
+				// compute time cost
+				startT := time.Now()
+
+				debugPrints, err := db.Lookup.AdvanceExecutionCursorWithTracing(
+					cursor,
+					big.NewInt(100000000000),
+					true,
+					true,
+					logIndex,
+					new(big.Int).Add(logIndex, big.NewInt(1)),
+				)
+				if err != nil {
+					return nil, err
+				}
+				tc := time.Since(startT)
+				fmt.Printf("funtion AdvanceExecutionCursorWithTracing time cost = %v\n", tc)
+
+				if len(debugPrints) > 0 {
+
+					// compute time cost
+					startT := time.Now()
+
+					vmTrace, err := utils.ExtractTrace(utils.ExtractValuesFromEmissions(debugPrints))
+					if err != nil {
+						return nil, err
+					}
+					frames, err := utils.RenderTraceFrames(txRes, vmTrace)
+					if err != nil {
+						return nil, err
+					}
+
+					var snap *snapshot.Snapshot
+					neadsCode := utils.NeedsTopLevelCreate(frames)
+					if neadsCode {
+						mach, err := db.Lookup.TakeMachine(cursor)
+						if err != nil {
+							return nil, err
+						}
+						snapTime := inbox.ChainTime{
+							BlockNum:  common.NewTimeBlocksInt(0),
+							Timestamp: big.NewInt(0),
+						}
+						endOfBlock := message.NewInboxMessage(
+							message.EndBlockMessage{},
+							common.Address{},
+							big.NewInt(0),
+							big.NewInt(0),
+							inbox.ChainTime{
+								BlockNum:  common.NewTimeBlocksInt(0),
+								Timestamp: big.NewInt(0),
+							},
+						)
+
+						_, _, _, err = mach.ExecuteAssertionAdvanced(
+							ctx,
+							1000000000000,
+							true,
+							[]inbox.InboxMessage{endOfBlock},
+							nil,
+							true,
+							false,
+						)
+						if err != nil {
+							return nil, err
+						}
+						snap, err = snapshot.NewSnapshot(ctx, mach, snapTime, big.NewInt(math.MaxInt64))
+						if err != nil {
+							return nil, err
+						}
+					}
+					if neadsCode {
+						utils.FillInTopLevelCreate(ctx, frames, snap)
+					}
+					for index, _ := range frames {
+						chaincontext := utils.NewChainContext(txRes, arbBlockInfo)
+						utils.AddChainContext(&frames[index], chaincontext)
+						tracelist = append(tracelist, &frames[index])
+					}
+
+					tc := time.Since(startT)
+					fmt.Printf("other time cost = %v\n", tc)
+
+				} else {
+					failMsg.Msg("error getting trace for transaction")
+				}
+				logIndex.Add(logIndex, big.NewInt(1))
+			}
+			if len(tracelist) > 0 {
+
+				// compute time cost
+				startT := time.Now()
+
+				if err := TraceDumpLogger(disk_trace_number+1, 10000, 100, tracelist); err != nil {
+					return nil, err
+				}
+
+				tc := time.Since(startT)
+				fmt.Printf("function TraceDumpLogger time cost = %v\n", tc)
+			}
+			disk_trace_number += 1
+			// end no trace losss
+		} else {
+			for disk_trace_number < block.NumberU64() {
+				blockInfo, err := db.GetBlock(disk_trace_number + 1)
+
+				if err != nil || blockInfo == nil {
+					return nil, err
+				}
+
+				blockLog, txResults, err := db.GetBlockResults(blockInfo)
+				if err != nil {
+					return nil, err
+				}
+				cursor, err := db.Lookup.GetExecutionCursorAtEndOfBlock(blockInfo.Header.Number.Uint64()-1, true)
+				if err != nil {
+					return nil, err
+				}
+				logIndex := blockLog.FirstAVMLog()
+				var tracelist []*utils.TraceFrame
+				for i := uint64(0); i < blockLog.BlockStats.TxCount.Uint64(); i++ {
+					txRes := txResults[i]
+					failMsg := logger.
+						Warn().
+						Uint64("block", blockInfo.Header.Number.Uint64()).
+						Str("txhash", txRes.IncomingRequest.MessageID.String()).
+						Err(err)
+					debugPrints, err := db.Lookup.AdvanceExecutionCursorWithTracing(
+						cursor,
+						big.NewInt(100000000000),
+						true,
+						true,
+						logIndex,
+						new(big.Int).Add(logIndex, big.NewInt(1)),
+					)
+					if err != nil {
+						return nil, err
+					}
+					if len(debugPrints) > 0 {
+						vmTrace, err := utils.ExtractTrace(utils.ExtractValuesFromEmissions(debugPrints))
+						if err != nil {
+							return nil, err
+						}
+						frames, err := utils.RenderTraceFrames(txRes, vmTrace)
+						if err != nil {
+							return nil, err
+						}
+
+						var snap *snapshot.Snapshot
+						neadsCode := utils.NeedsTopLevelCreate(frames)
+						if neadsCode {
+							mach, err := db.Lookup.TakeMachine(cursor)
+							if err != nil {
+								return nil, err
+							}
+							snapTime := inbox.ChainTime{
+								BlockNum:  common.NewTimeBlocksInt(0),
+								Timestamp: big.NewInt(0),
+							}
+							endOfBlock := message.NewInboxMessage(
+								message.EndBlockMessage{},
+								common.Address{},
+								big.NewInt(0),
+								big.NewInt(0),
+								inbox.ChainTime{
+									BlockNum:  common.NewTimeBlocksInt(0),
+									Timestamp: big.NewInt(0),
+								},
+							)
+
+							_, _, _, err = mach.ExecuteAssertionAdvanced(
+								ctx,
+								1000000000000,
+								true,
+								[]inbox.InboxMessage{endOfBlock},
+								nil,
+								true,
+								false,
+							)
+							if err != nil {
+								return nil, err
+							}
+							snap, err = snapshot.NewSnapshot(ctx, mach, snapTime, big.NewInt(math.MaxInt64))
+							if err != nil {
+								return nil, err
+							}
+						}
+						if neadsCode {
+							utils.FillInTopLevelCreate(ctx, frames, snap)
+						}
+						for index, _ := range frames {
+							chaincontext := utils.NewChainContext(txRes, arbBlockInfo)
+							utils.AddChainContext(&frames[index], chaincontext)
+							tracelist = append(tracelist, &frames[index])
+						}
+					} else {
+						failMsg.Msg("error getting trace for transaction")
+					}
+					logIndex.Add(logIndex, big.NewInt(1))
+				}
+				if len(tracelist) > 0 {
+					if err := TraceDumpLogger(disk_trace_number+1, 10000, 100, tracelist); err != nil {
+						return nil, err
+					}
+				}
+				disk_trace_number += 1
+			}
+		}
+		new_trace_number := strconv.FormatUint(disk_trace_number, 10)
+		file.Seek(0, io.SeekStart)
+		_, err = file.WriteString(new_trace_number)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	return header, nil
 }
 

@@ -287,7 +287,7 @@ type ValueAndInbox struct {
 }
 
 type LogConsumer interface {
-	AddLogs(initialIndex *big.Int, avmLogs []ValueAndInbox) error
+	AddLogs(initialIndex *big.Int, avmLogs []ValueAndInbox, ctx context.Context) error
 	DeleteLogs(avmLogs []ValueAndInbox) error
 }
 

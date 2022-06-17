@@ -2,9 +2,10 @@ package core
 
 import (
 	"context"
-	"github.com/offchainlabs/arbitrum/packages/arb-util/arblog"
 	"math/big"
 	"time"
+
+	"github.com/offchainlabs/arbitrum/packages/arb-util/arblog"
 )
 
 var logger = arblog.Logger.With().Str("component", "core").Logger()
@@ -118,7 +119,7 @@ func (lr *LogReader) getLogs(ctx context.Context) error {
 		}
 
 		if len(logs) > 0 {
-			if err = lr.consumer.AddLogs(firstIndex, logs); err != nil {
+			if err = lr.consumer.AddLogs(firstIndex, logs, ctx); err != nil {
 				return err
 			}
 		}
